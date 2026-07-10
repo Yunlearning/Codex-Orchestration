@@ -1,4 +1,4 @@
 interface:
   display_name: "Configure Agent Team"
-  short_description: "Configure orchestrator and executor models"
-  default_prompt: "Use $configure-agent-team to configure my orchestrator and executor models, then run suitable work with parallel subagents."
+  short_description: "Route models without replacing Codex orchestration"
+  default_prompt: "Use $configure-agent-team to choose orchestrator and executor models through the native controls this Codex task actually exposes."

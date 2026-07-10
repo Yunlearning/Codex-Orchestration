@@ -1,63 +1,81 @@
 ---
 name: configure-agent-team
-description: Interactively choose, validate, and configure an orchestrator model plus an executor model for Codex custom-agent and parallel-subagent workflows, then coordinate bounded workers through a reliable plan-delegate-synthesize-verify protocol. Use when a user asks to set up orchestrator/worker models, assign different models to the main agent and subagents, stretch usage with cheaper executors, configure custom Codex agents, run 2-5 subagents, or improve multi-agent delegation and synthesis.
+description: Choose an orchestrator model and an executor model for Codex using only native model and subagent controls. Use when a user wants a stronger root model plus faster or cheaper subagents without replacing Codex planning, Goals, delegation decisions, concurrency, role guidance, or verification behavior.
 ---
 
 # Configure Agent Team
 
-Configure the main Codex session as the orchestrator and a custom Codex agent as the executor. Keep model discovery dynamic, preserve existing configuration, and never promise a fixed cost or usage-limit multiplier.
+Configure model seats only. Codex remains the orchestrator.
 
-## Gather the setup
+## Preserve native Codex
 
-Inspect the current workspace, Codex version, available model catalog, and subagent tool schema before asking questions. Run:
+Treat these rules as non-negotiable:
+
+- Let Codex decide whether to plan, start or continue a Goal, work directly, spawn subagents, choose their number and roles, steer them, integrate their work, and verify the result.
+- Apply the executor preference only after Codex has independently decided to delegate.
+- Do not create another planner, supervisor loop, Goal loop, delegation gate, retry policy, worker protocol, or verification protocol.
+- Do not set `agents.max_threads` or `agents.max_depth`.
+- Do not redefine Codex's built-in `default`, `worker`, or `explorer` roles.
+- Do not change sandboxing, approvals, tools, hooks, or provider authentication.
+
+This skill must never spawn a subagent merely to test the configuration.
+
+## Inspect capabilities first
+
+Inspect the current `spawn_agent` tool schema and use the schema actually exposed in this task. Do not infer capabilities from a version number.
+
+Classify the task:
+
+- **Live model override available:** `spawn_agent` exposes `model` and, when needed, `reasoning_effort`.
+- **Named role available:** `spawn_agent` exposes `agent_type`.
+- **Routing unavailable:** those fields are hidden.
+
+For MultiAgentV2, a full-history fork (`fork_turns="all"`) inherits the root model and rejects role/model overrides. Model routing can apply only when Codex's independently chosen context strategy is compatible with a non-full fork. Do not force a different fork strategy just to make the requested executor model appear to work.
+
+Run the local catalog helper:
 
 ```bash
 python3 <skill-dir>/scripts/inspect_models.py
 ```
 
-Treat the CLI catalog as one capability signal, not the only one. A desktop host or remote destination may expose newer models than the local CLI catalog. Accept a model when the active host explicitly exposes its exact ID and supported reasoning effort.
+Treat that catalog as one capability signal. The active desktop host or remote destination may expose a different catalog. Use an exact model ID only when the execution host, its model picker, or official provider documentation confirms it. Never invent a slug.
 
-Ask only for missing values in one compact prompt. Use this reply shape:
+Read [providers-and-models.md](references/providers-and-models.md) before using Claude, a custom provider, different providers for the two seats, or persistent configuration.
 
-```text
-orchestrator=<model-id>@<effort>, executor=<model-id>@<effort>, workers=<1-5>, scope=<project|personal>, run_now=<yes|no>
-```
+## Ask for the two seats
 
-Explain that `xhigh` means Extra High. Allow `auto` to use the model's default effort. Default `workers` to `3`, `scope` to `project`, and `run_now` to `no` when the request only asks for configuration. Do not choose either model for the user when they asked to choose models. If `run_now=yes`, require the concrete task objective too.
-
-Ask for a provider ID only when the selected model is not available through the active provider. Read [providers-and-models.md](references/providers-and-models.md) before configuring Claude, a custom provider, or different providers for the two roles.
-
-## Normalize and confirm
-
-Map display names to exact model IDs only from a current runtime catalog, an active tool schema, or official provider documentation. Never invent a slug.
-
-Echo this summary before writing:
+Ask only for missing model choices in one compact prompt:
 
 ```text
-Orchestrator: <provider>/<model> at <effort>
-Executor: <provider>/<model> at <effort>
-Parallel executors: <count>
-Scope: <scope>
+orchestrator=<model-id>@<effort-or-auto>, executor=<model-id>@<effort-or-auto>
 ```
 
-If a model is absent from the CLI catalog but is explicitly available on the active host, note the catalog mismatch and pass `--confirm-unlisted-models`. Otherwise, stop and ask for a supported ID or provider setup. Do not use that flag merely to bypass uncertainty.
+Explain that `xhigh` means Extra High and `auto` uses the model default. Do not ask how many subagents to run or whether to run them. Do not promise “5x limits,” “3x cheaper,” or any fixed multiplier; cost and throughput depend on the task, provider, effort, and number of spawned agents.
 
-Do not claim “5x limits,” “3x cheaper,” or another fixed multiplier as a guaranteed outcome. Describe the setup as a way to trade orchestrator quality, executor cost, throughput, and total token usage. Multi-agent runs may consume more total tokens.
+Echo the exact IDs, efforts, providers, and capability result before activation.
 
-## Choose the scope
+## Activate the current task by default
 
-Use `project` by default. It writes:
+Use Codex's native model picker or `/model` command to select the orchestrator model for the root task. A skill cannot silently switch the already-running root model. If a user action is required, tell them exactly what to select and pause until they confirm it.
 
-- `.codex/config.toml` for the orchestrator model and concurrency settings.
-- `.codex/agents/orchestrated_executor.toml` for the executor model and behavior.
+Keep the executor choice as a task-local routing preference. Continue the user's normal work or Goal without creating a separate workflow.
 
-Use `personal` only after the user explicitly approves changing their global Codex defaults. It writes equivalent files under `${CODEX_HOME:-$HOME/.codex}`.
+When Codex independently decides a subagent is useful:
 
-Do not pass provider flags in project scope. Codex treats provider selection and credentials as machine-local configuration. Use personal scope only when the user explicitly wants a preconfigured provider selected globally or different providers assigned to the two roles.
+1. Preserve Codex's native role choice and context/fork decision.
+2. If the native spawn call exposes model overrides and the chosen fork is not full-history, set the selected executor `model` and `reasoning_effort` on that call.
+3. If the call is full-history, omit the overrides; the child inherits the orchestrator model.
+4. If model controls are hidden, do not claim live task-local routing. Unless the task already loaded a visible `executor` role and Codex accepted it on a non-full fork, state that the child inherits the root model.
 
-## Configure safely
+Direct per-spawn model overrides use the active provider. Do not claim cross-provider routing through a field the native tool does not expose.
 
-Resolve `<skill-dir>` to this skill's directory. Always preview first:
+A user may start a Goal in the same task after the root model is selected. This skill does not create, alter, pause, resume, or replace Goal state.
+
+## Persist only when requested
+
+If the user explicitly wants startup defaults for future tasks, ask for `scope=<project|personal>`. Default to project scope. Require explicit approval for personal scope because it changes global Codex defaults.
+
+Preview first:
 
 ```bash
 python3 <skill-dir>/scripts/configure_agent_team.py \
@@ -66,45 +84,35 @@ python3 <skill-dir>/scripts/configure_agent_team.py \
   --orchestrator-model <model-id> \
   --orchestrator-effort <effort-or-auto> \
   --executor-model <model-id> \
-  --executor-effort <effort-or-auto> \
-  --workers <count>
+  --executor-effort <effort-or-auto>
 ```
 
-Review the diff. Then rerun the same command with `--apply`. Add `--confirm-unlisted-models` only under the validation rule above. For personal scope, add the approved provider IDs with `--orchestrator-provider` and `--executor-provider` as needed.
+Review the diff, then rerun the same command with `--apply`. Add `--confirm-unlisted-models` only when another active-host capability source has already confirmed the exact model and effort.
 
-Never place API keys or bearer tokens in generated files. Require providers and authentication to be configured separately. Refuse to overwrite an unmanaged agent file unless the user explicitly authorizes `--force-agent-file` after reviewing it.
+The optional persistent mode writes:
 
-Validate the resulting TOML. Report that model changes apply to a new Codex task or session; do not claim the already-running root model switched in place.
+- `.codex/config.toml`: the root startup model plus a separate `[agents.executor]` declaration.
+- `.codex/agents/executor-model.toml`: the executor model, effort, and optional provider only.
 
-If `run_now=yes`, launch work only when the current task already has the selected orchestrator and named executor role loaded. Otherwise, do not run the task under stale roles; provide a ready-to-use next-task prompt that invokes this skill and includes the objective.
+The `executor` role is additive. It does not shadow `default`, `worker`, or `explorer`, and its layer contains no `developer_instructions` or orchestration policy. It is usable only in a new task whose native spawn surface exposes `agent_type` and selects a non-full-history fork. Never describe it as universal routing.
 
-## Run the team
+Persistent configuration does not hot-reload into the current task. Starting a new task does not carry an existing task-scoped Goal into that task.
 
-Read [orchestration-protocol.md](references/orchestration-protocol.md) before delegating work.
+If the script detects this project's older managed `orchestrated_executor.toml`, use `--migrate-legacy` only after reviewing the removal diff. The migration backs up and removes that managed file. It deliberately leaves `agents.max_threads` and `agents.max_depth` untouched because their prior values cannot be reconstructed safely; flag those keys for manual review.
 
-Use a single agent for simple work, tightly coupled edits, or tasks where coordination costs exceed the likely gain. Use parallel executors for independent, bounded work such as exploration, research lanes, tests, triage, reviews, or disjoint implementation slices.
+## Report truthfully
 
-Treat the configured worker count as a maximum, not a requirement. A user's `run_now=yes` permits suitable delegation but does not require wasteful fan-out; state when the fit gate selects zero workers.
+Distinguish these outcomes:
 
-Prefer `2` workers for moderate tasks and `3-5` for genuinely broad tasks. Never exceed the user's count or the runtime's concurrency cap. Keep `agents.max_depth = 1` unless the user explicitly requests recursive delegation.
+- `active`: the root model is selected and either a native per-spawn override or an already loaded `executor` role was accepted for compatible spawns.
+- `persistent-only`: the custom role was written but still needs a future compatible task before it can be used.
+- `partial`: a full-history child inherited the root model.
+- `unavailable`: the surface hides native model/role selection.
 
-When the runtime exposes named custom-agent roles, spawn `orchestrated_executor`. When its spawn primitive does not expose a role or model selector, say that executor pinning cannot be guaranteed in that surface and use the runtime's inherited/default worker behavior. Never silently claim the configured executor model was used.
-
-Give every executor a complete bounded contract: objective, relevant context, exclusive file or investigation scope, constraints, expected output, verification, and stop conditions. Dispatch independent work together. Keep overlapping writes serialized.
-
-Before dispatch, write a detailed, inspectable execution plan covering the target end state, dependencies, worker ownership, integration order, verification, and stop conditions. Do not expose private chain-of-thought.
-
-Remain responsible for user intent, the dependency graph, conflict resolution, synthesis, end-state verification, and the final answer. Treat worker output as evidence, not authority.
-
-## Handle failures
-
-Retry a failed worker at most once after correcting a specific issue such as missing context, invalid scope, or a transient tool error. Do not repeat identical failing prompts or expand fan-out to compensate for a bad decomposition.
-
-Interrupt or redirect workers that drift outside scope, duplicate another worker, or threaten overlapping writes. If a worker returns partial results, inspect any shared artifacts before deciding whether to finish locally, reassign the missing slice, or report a blocker.
+Never report executor cost, usage, or model identity as a fact unless the runtime exposed and accepted the override.
 
 ## Resources
 
-- `scripts/inspect_models.py`: print a compact current Codex model catalog.
-- `scripts/configure_agent_team.py`: preview and apply safe project or personal configuration changes.
-- [orchestration-protocol.md](references/orchestration-protocol.md): role boundaries, effort scaling, task contracts, synthesis, and verification.
-- [providers-and-models.md](references/providers-and-models.md): provider portability, model-ID validation, Claude caveats, and source links.
+- `scripts/inspect_models.py`: inspect the installed Codex CLI catalog.
+- `scripts/configure_agent_team.py`: preview and apply optional persistent settings.
+- [providers-and-models.md](references/providers-and-models.md): native capability, provider, fork, Goal, and portability constraints.
