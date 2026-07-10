@@ -1,0 +1,4 @@
+interface:
+  display_name: "Configure Agent Team"
+  short_description: "Configure orchestrator and executor models"
+  default_prompt: "Use $configure-agent-team to configure my orchestrator and executor models, then run suitable work with parallel subagents."
