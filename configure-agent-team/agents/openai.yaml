@@ -1,4 +1,0 @@
-interface:
-  display_name: "Configure Agent Team"
-  short_description: "Route models without replacing Codex orchestration"
-  default_prompt: "Use $configure-agent-team to choose orchestrator and executor models through the native controls this Codex task actually exposes."

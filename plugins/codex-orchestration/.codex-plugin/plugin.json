@@ -1,0 +1,37 @@
+{
+  "name": "codex-orchestration",
+  "version": "0.2.0",
+  "description": "Keep the current Codex model as orchestrator, add an optional plan advisor, and route eligible work to efficient executors.",
+  "author": {
+    "name": "CJ Zafir",
+    "url": "https://github.com/Cjbuilds"
+  },
+  "homepage": "https://github.com/Cjbuilds/Codex-Orchestration#readme",
+  "repository": "https://github.com/Cjbuilds/Codex-Orchestration",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "orchestration",
+    "subagents",
+    "model-routing",
+    "usage-limits"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Orchestration",
+    "shortDescription": "Optional plan advisor plus efficient executors",
+    "longDescription": "Keep the current session model as Codex's root orchestrator, optionally review non-trivial plans through a read-only advisor, and route compatible native subagent work to an efficient executor.",
+    "developerName": "CJ Zafir",
+    "category": "Productivity",
+    "capabilities": [
+      "Model routing",
+      "Plan review",
+      "Subagent workflows"
+    ],
+    "defaultPrompt": [
+      "/codex-orchestration executor: GPT-5.6 Luna xhigh, advisor: Anthropic Fable 5 xhigh",
+      "$codex-orchestration:codex-orchestration ask me which executor to use and whether I want an optional advisor; keep the current session model as orchestrator.",
+      "$codex-orchestration:codex-orchestration persist my executor and optional advisor roles for this project without changing the root model."
+    ]
+  }
+}
