@@ -1170,6 +1170,7 @@ def _status(
             "model such as current Sol or Terra"
         )
         print(f"Config: {app.config_path}")
+        fable_available = True
         if state_matches:
             print(f"Executor: {_route_summary(state['executor'])}")
             advisor = state.get("advisor")
@@ -1178,6 +1179,7 @@ def _status(
                 try:
                     verify_fable_prerequisites(advisor["effort"])
                 except ConfigurationError as exc:
+                    fable_available = False
                     print(f"Claude Fable 5: unavailable — {exc}")
                 else:
                     print(
@@ -1242,6 +1244,7 @@ def _status(
             and routing_state.startswith("installed and effective")
             and state_matches
             and agent_routes_available
+            and fable_available
             and not role_issues
             and not orphaned_roles
         )

@@ -1095,6 +1095,66 @@ class NativeRoutingTests(unittest.TestCase):
         )
         self.assertFalse((self.home / NATIVE.STATE_FILENAME).exists())
 
+    def test_require_effective_rejects_unavailable_saved_fable_effort(self) -> None:
+        self.run_script(
+            "--executor-model",
+            "gpt-5.6-luna",
+            "--executor-effort",
+            "xhigh",
+            "--advisor-fable",
+            "--advisor-effort",
+            "xhigh",
+            "--apply",
+        )
+        self.claude.write_text(
+            self.claude.read_text(encoding="utf-8").replace(
+                "(low, medium, high, xhigh, max)",
+                "(low, medium, high, max)",
+            ),
+            encoding="utf-8",
+        )
+
+        status = self.run_script(
+            "--status",
+            "--require-effective",
+            check=False,
+        )
+
+        self.assertEqual(status.returncode, 1)
+        self.assertIn(
+            "Claude Code does not advertise Fable effort 'xhigh'",
+            status.stdout,
+        )
+
+    def test_require_effective_rejects_unavailable_fable_auth(self) -> None:
+        self.run_script(
+            "--executor-model",
+            "gpt-5.6-luna",
+            "--executor-effort",
+            "xhigh",
+            "--advisor-fable",
+            "--apply",
+        )
+        self.claude.write_text(
+            self.claude.read_text(encoding="utf-8").replace(
+                '"loggedIn": True',
+                '"loggedIn": False',
+            ),
+            encoding="utf-8",
+        )
+
+        status = self.run_script(
+            "--status",
+            "--require-effective",
+            check=False,
+        )
+
+        self.assertEqual(status.returncode, 1)
+        self.assertIn(
+            "must be logged in through a first-party Pro or Max account",
+            status.stdout,
+        )
+
     def test_missing_or_project_shadowed_custom_agent_is_refused(self) -> None:
         missing = self.run_script(
             "--executor-agent",
