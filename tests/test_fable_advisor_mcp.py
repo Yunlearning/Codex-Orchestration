@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -20,6 +21,7 @@ SCRIPT = (
     / "scripts"
     / "fable_advisor_mcp.py"
 )
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("fable_advisor_mcp", SCRIPT)
 assert SPEC and SPEC.loader
 FABLE = importlib.util.module_from_spec(SPEC)
@@ -69,11 +71,10 @@ class FableAdvisorMcpTests(unittest.TestCase):
                 "model": "gpt-5.6-luna",
                 "effort": "xhigh",
             },
-            "planner": None,
             "advisor": None,
             "managed": {
-                "mode": "[codex-orchestration managed-policy v1] mode",
-                "usage": "[codex-orchestration managed-policy v1] usage",
+                "mode": f"{FABLE.MANAGED_MARKER}\nmode",
+                "usage": f"{FABLE.MANAGED_MARKER}\nusage",
                 "metadata": False,
                 "namespace": "agents",
                 "mcp": managed_mcp,
@@ -85,8 +86,12 @@ class FableAdvisorMcpTests(unittest.TestCase):
                 "namespace": {"known": True, "present": False},
                 "mcp": previous_mcp,
             },
+            "scalar_origin": None,
+            "managed_feature": None,
             **seats,
         }
+        if schema == 3 and "planner" not in payload:
+            payload["planner"] = None
         (self.home / FABLE.STATE_FILENAME).write_text(
             json.dumps(payload), encoding="utf-8"
         )
@@ -110,19 +115,27 @@ class FableAdvisorMcpTests(unittest.TestCase):
             ),
         )
 
-    def model_result(self, response: str) -> subprocess.CompletedProcess[str]:
+    def model_result(
+        self, response: str, *, model_usage: dict[str, object] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return self.completed(
             ["claude"],
             json.dumps(
                 {
                     "result": response,
-                    "modelUsage": {"claude-fable-5": {"outputTokens": 12}},
+                    "modelUsage": model_usage
+                    if model_usage is not None
+                    else {"claude-fable-5": {"outputTokens": 12}},
                 }
             ),
         )
 
     def invoke_with_results(
-        self, function: object, *args: str, model_response: str
+        self,
+        function: object,
+        *args: str,
+        model_response: str,
+        model_usage: dict[str, object] | None = None,
     ) -> tuple[dict[str, object], list[tuple[list[str], dict[str, object]]]]:
         calls: list[tuple[list[str], dict[str, object]]] = []
 
@@ -132,7 +145,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
             calls.append((command, kwargs))
             if command[-2:] == ["auth", "status"]:
                 return self.auth_result()
-            return self.model_result(model_response)
+            return self.model_result(model_response, model_usage=model_usage)
 
         with (
             mock.patch.dict(os.environ, {"CODEX_HOME": str(self.home)}),
@@ -210,6 +223,58 @@ class FableAdvisorMcpTests(unittest.TestCase):
             for name in FABLE.SENSITIVE_ENV:
                 self.assertNotIn(name, sanitized)
 
+    def test_runtime_model_policy_accepts_only_fable_and_exact_allowed_helper(
+        self,
+    ) -> None:
+        allowed_scenarios = (
+            ({FABLE.FABLE_MODEL: {"outputTokens": 12}}, [FABLE.FABLE_MODEL]),
+            (
+                {
+                    FABLE.FABLE_MODEL: {"outputTokens": 12},
+                    FABLE.FABLE_HELPER_MODEL: {"outputTokens": 1},
+                },
+                sorted((FABLE.FABLE_MODEL, FABLE.FABLE_HELPER_MODEL)),
+            ),
+        )
+        for model_usage, expected_models in allowed_scenarios:
+            with self.subTest(model_usage=model_usage):
+                result, _ = self.invoke_with_results(
+                    FABLE.review_plan,
+                    "packet",
+                    model_response="PLAN_APPROVED\nNo material gap found.",
+                    model_usage=model_usage,
+                )
+                self.assertEqual(result["decision"], "PLAN_APPROVED")
+                self.assertEqual(result["model"], FABLE.FABLE_MODEL)
+                self.assertEqual(result["used_models"], expected_models)
+
+        secret = "TOP-SECRET-MODEL-OUTPUT"
+        rejected_scenarios = (
+            (
+                {
+                    FABLE.FABLE_MODEL: {"outputTokens": 12},
+                    "claude-haiku-4-5-20251002": {"outputTokens": 1},
+                },
+                "outside the allowed Fable runtime policy",
+            ),
+            (
+                {FABLE.FABLE_HELPER_MODEL: {"outputTokens": 1}},
+                "did not confirm the pinned Claude Fable 5 primary model",
+            ),
+        )
+        for model_usage, expected_error in rejected_scenarios:
+            with self.subTest(model_usage=model_usage):
+                with self.assertRaisesRegex(
+                    FABLE.AdvisorError, expected_error
+                ) as failure:
+                    self.invoke_with_results(
+                        FABLE.review_plan,
+                        "packet",
+                        model_response=f"PLAN_APPROVED\n{secret}",
+                        model_usage=model_usage,
+                    )
+                self.assertNotIn(secret, str(failure.exception))
+
     def test_each_operation_pins_its_authorized_seat_effort(self) -> None:
         self.write_state(planner=self.route("low"))
         created, create_calls = self.invoke_with_results(
@@ -257,19 +322,19 @@ class FableAdvisorMcpTests(unittest.TestCase):
         invalid = self.route()
         invalid["server"] = "unmanaged-server"
         self.write_state(advisor=invalid)
-        with self.assertRaisesRegex(FABLE.AdvisorError, "Fable launcher"):
+        with self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"):
             FABLE.load_fable_route(self.home)
 
         self.write_state(planner=self.route(), advisor=self.route("xhigh"))
-        with self.assertRaisesRegex(FABLE.AdvisorError, "cannot be both"):
+        with self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"):
             FABLE.load_fable_route(self.home, seat="planner")
-        with self.assertRaisesRegex(FABLE.AdvisorError, "cannot be both"):
+        with self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"):
             FABLE.load_fable_route(self.home, seat="advisor")
 
         self.write_state(schema=2, advisor=self.route())
         self.assertEqual(FABLE.load_fable_route(self.home)["effort"], "high")
         self.write_state(schema=2, planner=self.route())
-        with self.assertRaisesRegex(FABLE.AdvisorError, "cannot authorize a Planner"):
+        with self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"):
             FABLE.load_fable_route(self.home, seat="planner")
 
         self.write_state(schema=4, advisor=self.route())
@@ -284,6 +349,9 @@ class FableAdvisorMcpTests(unittest.TestCase):
             ),
             "wrong namespace": lambda payload: payload["managed"].update(
                 namespace="collaboration"
+            ),
+            "unmarked policy": lambda payload: payload["managed"].update(
+                mode="unmarked mode"
             ),
             "disabled launcher": lambda payload: payload["managed"]["mcp"].update(
                 {"fable-advisor-python3": False}
@@ -574,7 +642,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
         self.write_state(planner=self.route(), advisor=self.route("xhigh"))
         with (
             mock.patch.dict(os.environ, {"CODEX_HOME": str(self.home)}),
-            self.assertRaisesRegex(FABLE.AdvisorError, "cannot be both"),
+            self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"),
         ):
             FABLE.status()
 

@@ -24,6 +24,15 @@ import threading
 import time
 from typing import Any
 
+from routing_state import (
+    FABLE_EFFORTS,
+    FABLE_MODEL,
+    MANAGED_MARKER,
+    ROUTING_TOOL_NAMESPACE,
+    RoutingStateError,
+    validate_routing_state,
+)
+
 try:
     import tomllib
 except ModuleNotFoundError as exc:  # pragma: no cover - Python < 3.11
@@ -32,16 +41,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover - Python < 3.11
 
 POLICY_VERSION = 3
 STATE_SCHEMA = 3
-SUPPORTED_STATE_SCHEMAS = {1, 2, 3}
-MANAGED_MARKER = "[codex-orchestration managed-policy v1]"
 STATE_FILENAME = ".codex-orchestration-routing.json"
 PROBE_VALUE = "CODEX_ORCHESTRATION_CAPABILITY_PROBE"
-ROUTING_TOOL_NAMESPACE = "agents"
 PLUGIN_ID = "codex-orchestration@codex-orchestration"
-FABLE_MODEL = "claude-fable-5"
 FABLE_DEFAULT_EFFORT = "high"
 FABLE_EFFORT_CHOICES = ("low", "medium", "high", "xhigh", "max")
-FABLE_EFFORTS = set(FABLE_EFFORT_CHOICES)
 FABLE_EFFORT_ALIASES = {"ultra": "max"}
 FABLE_SERVERS = {
     "fable-advisor-python3": ("python3", []),
@@ -556,18 +560,6 @@ def fable_key_path(server: str) -> str:
     )
 
 
-def _valid_snapshot(saved: Any, expected: type | tuple[type, ...]) -> bool:
-    if not (
-        isinstance(saved, dict)
-        and isinstance(saved.get("known"), bool)
-        and isinstance(saved.get("present"), bool)
-    ):
-        return False
-    if saved["known"] and saved["present"]:
-        return "value" in saved and isinstance(saved["value"], expected)
-    return True
-
-
 def validate_planning_routes(
     planner: dict[str, Any] | None,
     advisor: dict[str, Any] | None,
@@ -593,9 +585,12 @@ def validate_planning_routes(
 
 
 def _read_state(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
         return None
-    info = path.lstat()
+    except OSError as exc:
+        raise ConfigurationError(f"Could not inspect routing state {path}: {exc}") from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         raise ConfigurationError(f"Routing state is not a regular file: {path}")
     if info.st_nlink != 1:
@@ -604,84 +599,10 @@ def _read_state(path: Path) -> dict[str, Any] | None:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ConfigurationError(f"Could not read routing state {path}: {exc}") from exc
-    if not isinstance(state, dict) or state.get("schema") not in SUPPORTED_STATE_SCHEMAS:
-        raise ConfigurationError(f"Unknown routing state schema in {path}.")
-    if state.get("managed_by") != "codex-orchestration":
-        raise ConfigurationError(f"Routing state is not owned by this plugin: {path}")
-    managed = state.get("managed")
-    if not (
-        isinstance(managed, dict)
-        and isinstance(managed.get("mode"), str)
-        and isinstance(managed.get("usage"), str)
-        and managed.get("metadata") is False
-        and managed.get("namespace") == ROUTING_TOOL_NAMESPACE
-    ):
-        raise ConfigurationError(f"Routing state has invalid managed values: {path}")
-    for label, route, optional in (
-        ("executor", state.get("executor"), False),
-        ("planner", state.get("planner"), True),
-        ("advisor", state.get("advisor"), True),
-    ):
-        if optional and route is None:
-            continue
-        if not isinstance(route, dict):
-            raise ConfigurationError(f"Routing state has an invalid {label} route: {path}")
-        kind = route.get("kind")
-        valid = (
-            kind == "model"
-            and isinstance(route.get("model"), str)
-            and MODEL_RE.fullmatch(route["model"])
-            and isinstance(route.get("effort"), str)
-            and EFFORT_RE.fullmatch(route["effort"])
-        ) or (
-            kind == "agent"
-            and isinstance(route.get("agent"), str)
-            and AGENT_RE.fullmatch(route["agent"])
-        ) or (
-            label in {"planner", "advisor"}
-            and kind == "fable"
-            and route.get("model") == FABLE_MODEL
-            and route.get("effort") in FABLE_EFFORTS
-            and route.get("server") in FABLE_SERVERS
-        )
-        if not valid:
-            raise ConfigurationError(f"Routing state has an invalid {label} route: {path}")
-    validate_planning_routes(state.get("planner"), state.get("advisor"))
-    previous = state.get("previous")
-    if not isinstance(previous, dict):
-        raise ConfigurationError(f"Routing state has no restore values: {path}")
-    for key in ("mode", "usage", "metadata", "namespace"):
-        saved = previous.get(key)
-        expected = bool if key == "metadata" else str
-        if not _valid_snapshot(saved, expected):
-            raise ConfigurationError(f"Routing state has invalid {key} restore data: {path}")
-    managed_mcp = managed.get("mcp")
-    previous_mcp = previous.get("mcp")
-    if managed_mcp is not None or previous_mcp is not None:
-        if not (
-            isinstance(managed_mcp, dict)
-            and bool(managed_mcp)
-            and set(managed_mcp).issubset(FABLE_SERVERS)
-            and all(isinstance(value, bool) for value in managed_mcp.values())
-            and isinstance(previous_mcp, dict)
-            and set(previous_mcp) == set(managed_mcp)
-            and all(_valid_snapshot(value, bool) for value in previous_mcp.values())
-        ):
-            raise ConfigurationError(f"Routing state has invalid MCP restore data: {path}")
-    fable_routes = [
-        route
-        for route in (state.get("planner"), state.get("advisor"))
-        if isinstance(route, dict) and route.get("kind") == "fable"
-    ]
-    if fable_routes and not (
-        isinstance(managed_mcp, dict)
-        and sum(value is True for value in managed_mcp.values()) == 1
-        and managed_mcp.get(fable_routes[0]["server"]) is True
-    ):
-        raise ConfigurationError(
-            f"Routing state does not enable exactly its configured Fable launcher: {path}"
-        )
-    return state
+    try:
+        return validate_routing_state(state)
+    except RoutingStateError as exc:
+        raise ConfigurationError("Saved routing state is invalid.") from exc
 
 
 def _validate_state_config(state: dict[str, Any] | None, config_path: Path) -> None:

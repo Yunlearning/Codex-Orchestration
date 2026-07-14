@@ -23,6 +23,7 @@ SCRIPT = (
     / "scripts"
     / "configure_native_routing.py"
 )
+sys.path.insert(0, str(SCRIPT.parent))
 
 SPEC = importlib.util.spec_from_file_location("configure_native_routing", SCRIPT)
 assert SPEC and SPEC.loader
@@ -539,21 +540,35 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertEqual(status.returncode, 0)
 
     def test_legacy_state_schemas_upgrade_to_three_without_losing_restore(self) -> None:
-        self.run_script(
-            "--executor-model",
-            "gpt-5.6-luna",
-            "--apply",
-        )
-        state_path = self.home / NATIVE.STATE_FILENAME
-        original = json.loads(state_path.read_text(encoding="utf-8"))
-        original_previous = original["previous"]
-
         for legacy_schema in (1, 2):
             with self.subTest(schema=legacy_schema):
+                setup_arguments = ["--executor-model", "gpt-5.6-luna"]
+                if legacy_schema == 2:
+                    setup_arguments.append("--advisor-fable")
+                self.run_script(*setup_arguments, "--apply")
+
+                state_path = self.home / NATIVE.STATE_FILENAME
                 legacy = json.loads(state_path.read_text(encoding="utf-8"))
+                original_previous = legacy["previous"]
                 legacy["schema"] = legacy_schema
+                legacy["policy_version"] = legacy_schema
                 legacy.pop("planner", None)
+                legacy["managed"]["mode"] = (
+                    f"{NATIVE.MANAGED_MARKER}\nlegacy schema {legacy_schema} mode"
+                )
+                legacy["managed"]["usage"] = (
+                    f"{NATIVE.MANAGED_MARKER}\nlegacy schema {legacy_schema} usage"
+                )
                 state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+                config = self.read_fake_config()
+                feature = config["features"]["multi_agent_v2"]
+                feature["multi_agent_mode_hint_text"] = legacy["managed"]["mode"]
+                feature["usage_hint_text"] = legacy["managed"]["usage"]
+                (self.home / ".fake-user-config.json").write_text(
+                    json.dumps(config), encoding="utf-8"
+                )
+
                 self.run_script(
                     "--executor-model",
                     "gpt-5.6-luna",
@@ -563,8 +578,108 @@ class NativeRoutingTests(unittest.TestCase):
                 )
                 upgraded = json.loads(state_path.read_text(encoding="utf-8"))
                 self.assertEqual(upgraded["schema"], 3)
+                self.assertEqual(upgraded["policy_version"], 3)
                 self.assertEqual(upgraded["previous"], original_previous)
                 self.assertEqual(upgraded["planner"]["model"], "gpt-5.6-sol")
+                if legacy_schema == 2:
+                    self.assertIn("mcp", upgraded["managed"])
+
+                self.run_script("--disable", "--apply")
+                self.assertEqual(
+                    self.read_fake_config()["features"]["multi_agent_v2"],
+                    {"max_concurrent_threads_per_session": 5},
+                )
+                self.assertFalse(state_path.exists())
+
+    def test_state_policy_version_must_match_schema(self) -> None:
+        self.run_script("--executor-model", "gpt-5.6-luna", "--apply")
+        state_path = self.home / NATIVE.STATE_FILENAME
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+
+        for schema, wrong_policy in ((1, 2), (2, 3), (3, 1), (3, True)):
+            with self.subTest(schema=schema, policy=wrong_policy):
+                state = json.loads(json.dumps(current))
+                state["schema"] = schema
+                state["policy_version"] = wrong_policy
+                if schema < 3:
+                    state.pop("planner")
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+
+                status = self.run_script("--status", check=False)
+                self.assertEqual(status.returncode, 2)
+                self.assertIn("Saved routing state is invalid", status.stderr)
+                self.assertNotIn("policy_version", status.stderr)
+
+    def test_legacy_state_schemas_reject_planner_key_even_when_null(self) -> None:
+        self.run_script("--executor-model", "gpt-5.6-luna", "--apply")
+        state_path = self.home / NATIVE.STATE_FILENAME
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+
+        for schema in (1, 2):
+            with self.subTest(schema=schema):
+                state = json.loads(json.dumps(current))
+                state["schema"] = schema
+                state["policy_version"] = schema
+                state["planner"] = None
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+
+                status = self.run_script("--status", check=False)
+                self.assertEqual(status.returncode, 2)
+                self.assertIn("Saved routing state is invalid", status.stderr)
+
+    def test_schema_one_rejects_fable_and_mcp_fields(self) -> None:
+        self.run_script("--executor-model", "gpt-5.6-luna", "--apply")
+        state_path = self.home / NATIVE.STATE_FILENAME
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+        current["schema"] = 1
+        current["policy_version"] = 1
+        current.pop("planner")
+        mutations = {
+            "fable advisor": lambda state: state.__setitem__(
+                "advisor",
+                {
+                    "kind": "fable",
+                    "model": NATIVE.FABLE_MODEL,
+                    "effort": "high",
+                    "server": "fable-advisor-python3",
+                },
+            ),
+            "managed mcp": lambda state: state["managed"].__setitem__("mcp", None),
+            "previous mcp": lambda state: state["previous"].__setitem__("mcp", None),
+        }
+
+        for label, mutate in mutations.items():
+            with self.subTest(field=label):
+                state = json.loads(json.dumps(current))
+                mutate(state)
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+
+                status = self.run_script("--status", check=False)
+                self.assertEqual(status.returncode, 2)
+                self.assertIn("Saved routing state is invalid", status.stderr)
+
+    def test_saved_managed_strings_require_exact_marker_line(self) -> None:
+        self.run_script("--executor-model", "gpt-5.6-luna", "--apply")
+        state_path = self.home / NATIVE.STATE_FILENAME
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+        mutations = {
+            "mode": "arbitrary managed mode",
+            "usage": f"{NATIVE.MANAGED_MARKER}-forged suffix",
+            "marker only": NATIVE.MANAGED_MARKER,
+            "empty body": f"{NATIVE.MANAGED_MARKER}\n   ",
+        }
+
+        for label, unmarked in mutations.items():
+            with self.subTest(field=label):
+                state = json.loads(json.dumps(current))
+                field = "usage" if label == "usage" else "mode"
+                state["managed"][field] = unmarked
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+
+                status = self.run_script("--status", check=False)
+                self.assertEqual(status.returncode, 2)
+                self.assertIn("Saved routing state is invalid", status.stderr)
+                self.assertNotIn(unmarked, status.stderr)
 
     def test_unknown_state_schema_fails_closed(self) -> None:
         self.run_script(
@@ -579,7 +694,7 @@ class NativeRoutingTests(unittest.TestCase):
 
         status = self.run_script("--status", check=False)
         self.assertEqual(status.returncode, 2)
-        self.assertIn("Unknown routing state schema", status.stderr)
+        self.assertIn("Saved routing state is invalid", status.stderr)
 
     def test_invalid_saved_planner_route_fails_closed(self) -> None:
         self.run_script(
@@ -596,7 +711,7 @@ class NativeRoutingTests(unittest.TestCase):
 
         status = self.run_script("--status", "--require-effective", check=False)
         self.assertEqual(status.returncode, 2)
-        self.assertIn("invalid planner route", status.stderr)
+        self.assertIn("Saved routing state is invalid", status.stderr)
 
     def test_existing_user_policy_requires_explicit_replace_and_is_restored(self) -> None:
         initial = {
@@ -908,7 +1023,9 @@ class NativeRoutingTests(unittest.TestCase):
         )
         state_path = self.home / NATIVE.STATE_FILENAME
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["managed"]["usage"] = "DIFFERENT MANAGED VALUE"
+        state["managed"]["usage"] = (
+            f"{NATIVE.MANAGED_MARKER}\nDIFFERENT MANAGED VALUE"
+        )
         state_path.write_text(json.dumps(state), encoding="utf-8")
         status = self.run_script("--status")
         self.assertIn("managed fields conflict", status.stdout)

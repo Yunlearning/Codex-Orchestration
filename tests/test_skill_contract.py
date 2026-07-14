@@ -19,6 +19,9 @@ REFERENCE = (SKILL_ROOT / "references" / "providers-and-models.md").read_text(
 NATIVE_SCRIPT = (
     SKILL_ROOT / "scripts" / "configure_native_routing.py"
 ).read_text(encoding="utf-8")
+ROUTING_STATE = (SKILL_ROOT / "scripts" / "routing_state.py").read_text(
+    encoding="utf-8"
+)
 
 
 class SkillContractTests(unittest.TestCase):
@@ -66,7 +69,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn('`tool_namespace = "agents"`', SKILL)
         self.assertIn("reserved `collaboration.spawn_agent` schema", SKILL)
         self.assertIn("Do not add `enabled = true`", SKILL)
-        self.assertIn('ROUTING_TOOL_NAMESPACE = "agents"', NATIVE_SCRIPT)
+        self.assertIn('ROUTING_TOOL_NAMESPACE = "agents"', ROUTING_STATE)
 
     def test_native_config_uses_codex_app_server(self) -> None:
         self.assertIn("Codex App Server's `config/read`", SKILL)
@@ -145,7 +148,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("All bundled variants are disabled by default", SKILL)
         self.assertIn("first-party Pro or Max account", SKILL)
         self.assertIn("never extracts a token", SKILL)
-        self.assertIn("runtime `modelUsage` to confirm `claude-fable-5`", SKILL)
+        self.assertIn("runtime `modelUsage` to contain the pinned `claude-fable-5`", SKILL)
+        self.assertIn("explicit exact helper allowlist", SKILL)
+        self.assertIn("unknown additional or missing primary model", SKILL)
         self.assertIn("`create_plan`", SKILL)
         self.assertIn("`revise_plan`", SKILL)
         self.assertIn("`review_plan`", SKILL)

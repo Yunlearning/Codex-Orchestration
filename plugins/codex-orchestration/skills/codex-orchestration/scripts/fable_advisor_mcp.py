@@ -19,16 +19,19 @@ import subprocess
 import sys
 from typing import Any, Literal
 
+import routing_state
+
 
 STATE_FILENAME = ".codex-orchestration-routing.json"
-FABLE_MODEL = "claude-fable-5"
-SUPPORTED_STATE_SCHEMAS = {2, 3}
-FABLE_SERVERS = {
-    "fable-advisor-python3",
-    "fable-advisor-python",
-    "fable-advisor-py",
-}
-SUPPORTED_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+MANAGED_MARKER = routing_state.MANAGED_MARKER
+FABLE_MODEL = routing_state.FABLE_MODEL
+FABLE_SERVERS = routing_state.FABLE_SERVERS
+SUPPORTED_EFFORTS = routing_state.FABLE_EFFORTS
+# Claude Code currently reports this exact internal helper alongside Fable for
+# some calls. Keep the runtime policy explicit and fail closed if that identity
+# rotates or any other model appears.
+FABLE_HELPER_MODEL = "claude-haiku-4-5-20251001"
+ALLOWED_RUNTIME_MODELS = frozenset({FABLE_MODEL, FABLE_HELPER_MODEL})
 CLAUDE_TIMEOUT_SECONDS = 600
 AUTH_TIMEOUT_SECONDS = 20
 # Applies to the combined user-controlled text sent by one model operation.
@@ -162,65 +165,21 @@ def _read_routing_state(home: Path | None = None) -> dict[str, Any]:
         raise AdvisorError("Claude Fable 5 is not configured; run setup first.") from exc
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AdvisorError("Could not read valid routing state.") from exc
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") not in SUPPORTED_STATE_SCHEMAS
-        or payload.get("managed_by") != "codex-orchestration"
-    ):
-        raise AdvisorError("The saved routing state is invalid.")
-    schema = payload["schema"]
-    if payload.get("policy_version") != schema:
-        raise AdvisorError("The saved routing state has an invalid policy version.")
-    config_file = payload.get("config_file")
-    if not isinstance(config_file, str) or (
-        Path(config_file).expanduser().resolve()
-        != (root / "config.toml").expanduser().resolve()
-    ):
+    try:
+        state = routing_state.validate_routing_state(payload)
+    except routing_state.RoutingStateError as exc:
+        raise AdvisorError("The saved routing state is invalid.") from exc
+    config_file = state["config_file"]
+    try:
+        belongs_to_home = (
+            Path(config_file).expanduser().resolve()
+            == (root / "config.toml").expanduser().resolve()
+        )
+    except (OSError, RuntimeError) as exc:
+        raise AdvisorError("The saved routing state belongs to another Codex home.") from exc
+    if not belongs_to_home:
         raise AdvisorError("The saved routing state belongs to another Codex home.")
-    managed = payload.get("managed")
-    previous = payload.get("previous")
-    if not (
-        isinstance(managed, dict)
-        and isinstance(managed.get("mode"), str)
-        and isinstance(managed.get("usage"), str)
-        and managed.get("metadata") is False
-        and managed.get("namespace") == "agents"
-        and isinstance(previous, dict)
-    ):
-        raise AdvisorError("The saved routing state has invalid managed values.")
-    planner = payload.get("planner")
-    advisor = payload.get("advisor")
-    if schema < 3 and planner is not None:
-        raise AdvisorError("The saved routing state cannot authorize a Planner.")
-    if (
-        isinstance(planner, dict)
-        and planner.get("kind") == "fable"
-        and isinstance(advisor, dict)
-        and advisor.get("kind") == "fable"
-    ):
-        raise AdvisorError(
-            "Claude Fable 5 cannot be both Planner and Advisor; re-run setup "
-            "with independent routes."
-        )
-    fable_routes = [
-        route
-        for route in (planner, advisor)
-        if isinstance(route, dict) and route.get("kind") == "fable"
-    ]
-    managed_mcp = managed.get("mcp")
-    if fable_routes and not (
-        len(fable_routes) == 1
-        and isinstance(managed_mcp, dict)
-        and bool(managed_mcp)
-        and set(managed_mcp).issubset(FABLE_SERVERS)
-        and all(isinstance(value, bool) for value in managed_mcp.values())
-        and sum(value is True for value in managed_mcp.values()) == 1
-        and managed_mcp.get(fable_routes[0].get("server")) is True
-    ):
-        raise AdvisorError(
-            "The saved routing state does not authorize exactly one Fable launcher."
-        )
-    return payload
+    return state
 
 
 def _validate_seat(seat: str) -> Seat:
@@ -230,21 +189,9 @@ def _validate_seat(seat: str) -> Seat:
 
 
 def _validate_fable_route(route: Any, *, seat: Seat) -> dict[str, str]:
-    label = seat.capitalize()
     if not isinstance(route, dict) or route.get("kind") != "fable":
         raise AdvisorError(f"Claude Fable 5 is not the configured {seat}.")
-    model = route.get("model")
-    effort = route.get("effort")
-    server = route.get("server")
-    if (
-        model != FABLE_MODEL
-        or effort not in SUPPORTED_EFFORTS
-        or server not in FABLE_SERVERS
-    ):
-        raise AdvisorError(f"The saved Claude Fable 5 {label} route is invalid.")
-    # Keep the original Python return shape while still validating the persisted
-    # server binding above.
-    return {"model": model, "effort": effort}
+    return {"model": route["model"], "effort": route["effort"]}
 
 
 def load_fable_route(
@@ -276,6 +223,24 @@ def _validate_inputs(operation: str, **values: Any) -> dict[str, str]:
 
 def _first_non_empty_line(response: str) -> str:
     return next((line.strip() for line in response.splitlines() if line.strip()), "")
+
+
+def _validate_runtime_models(usage: Any) -> list[str]:
+    raw_models = list(usage) if isinstance(usage, dict) else []
+    if not all(isinstance(model, str) for model in raw_models):
+        raise AdvisorError(
+            "Runtime metadata reported a model outside the allowed Fable runtime policy."
+        )
+    used_models = sorted(raw_models)
+    if FABLE_MODEL not in used_models:
+        raise AdvisorError(
+            "Runtime metadata did not confirm the pinned Claude Fable 5 primary model."
+        )
+    if not set(used_models).issubset(ALLOWED_RUNTIME_MODELS):
+        raise AdvisorError(
+            "Runtime metadata reported a model outside the allowed Fable runtime policy."
+        )
+    return used_models
 
 
 def _invoke_fable(
@@ -336,6 +301,9 @@ def _invoke_fable(
         raise AdvisorError(f"Claude Fable 5 {operation} returned malformed JSON.") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("result"), str):
         raise AdvisorError(f"Claude Fable 5 {operation} returned an unexpected response.")
+    # Authorize the complete runtime identity set before interpreting or
+    # returning any model-authored plan/review content.
+    used_models = _validate_runtime_models(payload.get("modelUsage"))
     response = payload["result"].strip()
     signal = _first_non_empty_line(response)
     if signal not in allowed_signals:
@@ -345,14 +313,6 @@ def _invoke_fable(
         raise AdvisorError(
             f"Claude Fable 5 {operation} omitted the required {expected} signal."
         )
-    usage = payload.get("modelUsage")
-    used_models = (
-        sorted(key for key in usage if isinstance(key, str))
-        if isinstance(usage, dict)
-        else []
-    )
-    if FABLE_MODEL not in used_models:
-        raise AdvisorError("Runtime metadata did not confirm Claude Fable 5.")
     return signal, response, route, auth, used_models
 
 
@@ -360,6 +320,8 @@ def _base_result(
     *, route: dict[str, str], auth: dict[str, str], used_models: list[str]
 ) -> dict[str, Any]:
     return {
+        # ``model`` is the route's pinned primary identity; ``used_models``
+        # preserves every runtime-reported model, including an allowed helper.
         "model": FABLE_MODEL,
         "effort": route["effort"],
         "auth_method": auth["auth_method"],

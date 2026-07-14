@@ -13,7 +13,7 @@
    ```
 
 4. From a new Desktop task, verify one direct same-provider child route. Record `route accepted`; record `used and confirmed` only if the client exposes effective child model/provider/effort metadata.
-5. If Claude Fable 5 is included in the release, verify both supported seat paths from a first-party Claude login: Fable Planner `create_plan`/`revise_plan` with a different Advisor, and Fable Advisor `review_plan` with root planning. Confirm exact runtime model/effort metadata, status, the bounded approval loop, and disable/restore.
+5. If Claude Fable 5 is included in the release, verify both supported seat paths from a first-party Claude login: Fable Planner `create_plan`/`revise_plan` with a different Advisor, and Fable Advisor `review_plan` with root planning. Confirm the pinned primary model, exact allowlisted helper set reported by runtime metadata, effort, status, the bounded approval loop, and disable/restore. An unknown helper model is a release failure, not an implicit allowlist expansion.
 6. Merge only after every protected check passes.
 7. Create a signed annotated tag named `v<manifest-version>` at the reviewed merge commit.
 8. Re-run `python3 scripts/release_check.py --require-tag` and publish a GitHub release from that tag using the matching changelog section.

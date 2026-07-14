@@ -40,9 +40,12 @@ class PackagingTests(unittest.TestCase):
     def test_native_and_custom_configurators_are_packaged(self) -> None:
         native = SKILL_ROOT / "scripts" / "configure_native_routing.py"
         custom = SKILL_ROOT / "scripts" / "configure_orchestration.py"
+        routing_state = SKILL_ROOT / "scripts" / "routing_state.py"
         self.assertTrue(native.is_file())
         self.assertTrue(custom.is_file())
+        self.assertTrue(routing_state.is_file())
         self.assertIn("config/batchWrite", native.read_text(encoding="utf-8"))
+        self.assertIn("validate_routing_state", routing_state.read_text(encoding="utf-8"))
         self.assertIn("Standalone custom agent", custom.read_text(encoding="utf-8"))
 
     def test_fable_mcp_is_packaged_and_disabled_until_selected(self) -> None:
@@ -109,6 +112,9 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('NEW_VERSION = "0.5.0"', smoke_text)
         self.assertIn("configure_native_routing.py", smoke_text)
         self.assertIn("configure_orchestration.py", smoke_text)
+        self.assertIn("fable_advisor_mcp.py", smoke_text)
+        self.assertIn('"method": "initialize"', smoke_text)
+        self.assertIn('"method": "tools/list"', smoke_text)
         self.assertIn('"marketplace",\n                    "upgrade"', smoke_text)
 
     def test_current_session_model_is_the_only_orchestrator(self) -> None:
@@ -124,7 +130,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_readme_explains_policy_guided_route_without_overpromising(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-        native = (SKILL_ROOT / "scripts" / "configure_native_routing.py").read_text(
+        routing_state = (SKILL_ROOT / "scripts" / "routing_state.py").read_text(
             encoding="utf-8"
         )
 
@@ -132,7 +138,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("never creates credentials or bypasses permissions", readme)
         self.assertIn("Codex decides when delegation or parallel work is useful", readme)
         self.assertIn("Fable 5 is the bundled cross-provider exception", readme)
-        self.assertIn('ROUTING_TOOL_NAMESPACE = "agents"', native)
+        self.assertIn('ROUTING_TOOL_NAMESPACE = "agents"', routing_state)
 
     def test_ascii_and_role_copy_are_plain_and_root_centered(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -176,6 +182,9 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("do not need to add an Anthropic API key to Codex", readme)
         self.assertIn("`.codex/agents/`", readme)
         self.assertIn("`~/.codex/agents/`", readme)
+        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("explicit exact helper allowlist", skill)
+        self.assertIn("unknown additional or missing primary model", skill)
 
     def test_speed_and_limit_copy_is_clear_and_qualified(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
